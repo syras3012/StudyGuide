@@ -4,6 +4,7 @@ import re
 import streamlit as st
 from dotenv import load_dotenv
 from google import genai
+from supabase import create_client, Client
 
 from io import BytesIO
 from datetime import datetime
@@ -11,6 +12,7 @@ from datetime import datetime
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Paragraph
 from docx import Document
+from supabase import create_client
 
 # -----------------------------
 # Load Environment
@@ -23,6 +25,17 @@ if not API_KEY:
     st.stop()
 
 client = genai.Client(api_key=API_KEY)
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_PUBLISHABLE_KEY")
+
+if not supabase_url or not supabase_key:
+    st.error("❌ Supabase credentials not found.")
+    st.stop()
+
+supabase = create_client(
+    supabase_url,
+    supabase_key,
+)
 
 # -----------------------------
 # Page Config
@@ -87,9 +100,91 @@ st.markdown(
 
 if "history" not in st.session_state:
     st.session_state.history = []
+if "user" not in st.session_state:
+    st.session_state.user = None
 
 if "chat_count" not in st.session_state:
     st.session_state.chat_count = 0
+
+# -----------------------------
+# Login Gate
+# -----------------------------
+
+if st.session_state.user is None:
+
+    st.title("🔐 StudyGuide AI Login")
+    st.caption("Sign in to access your AI study assistant.")
+
+    login_email = st.text_input(
+        "Email",
+        placeholder="student@example.com",
+    )
+
+    login_password = st.text_input(
+        "Password",
+        type="password",
+    )
+
+    if st.button("Login", type="primary"):
+
+        if not login_email or not login_password:
+            st.warning("Please enter both email and password.")
+
+        else:
+            try:
+                login_response = supabase.auth.sign_in_with_password(
+                    {
+                        "email": login_email,
+                        "password": login_password,
+                    }
+                )
+
+                st.session_state.user = login_response.user
+                st.success("Login successful.")
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Login failed: {e}")
+
+    st.markdown("---")
+    st.subheader("New here?")
+
+    signup_email = st.text_input(
+        "New Email",
+        key="signup_email",
+    )
+
+    signup_password = st.text_input(
+        "New Password",
+        type="password",
+        key="signup_password",
+    )
+
+    if st.button("Create Account"):
+
+        if not signup_email or not signup_password:
+            st.warning("Please enter email and password.")
+
+        else:
+            try:
+                supabase.auth.sign_up(
+                    {
+                        "email": signup_email,
+                        "password": signup_password,
+                        "options": {
+                            "email_redirect_to": "http://localhost:8501",
+                        },
+                    }
+                )
+
+                st.success(
+                    "Account created. Check your email for confirmation, then log in."
+                )
+
+            except Exception as e:
+                st.error(f"Sign up failed: {e}")
+
+    st.stop()
 # -----------------------------
 # Sidebar
 # -----------------------------
@@ -260,19 +355,6 @@ def create_pdf(question, answer):
     buffer.seek(0)
 
     return buffer
-def create_pdf(question, answer):
-
-    buffer = BytesIO()
-
-    doc = SimpleDocTemplate(buffer)
-
-    ...
-
-    doc.build(story)
-
-    buffer.seek(0)
-
-    return buffer
 
 
 # ==============================
@@ -280,11 +362,9 @@ def create_pdf(question, answer):
 # ==============================
 
 def create_history_pdf(history):
-
     buffer = BytesIO()
 
     doc = SimpleDocTemplate(buffer)
-
     styles = getSampleStyleSheet()
 
     story = []
@@ -296,6 +376,54 @@ def create_history_pdf(history):
         )
     )
 
+    story.append(
+        Paragraph(
+            f"Generated: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}",
+            styles["Normal"],
+        )
+    )
+
+    for item in history:
+        story.append(
+            Paragraph(
+                f"<b>Conversation #{item['id']}</b>",
+                styles["Heading2"],
+            )
+        )
+
+        story.append(
+            Paragraph(
+                "<b>Question:</b>",
+                styles["Heading3"],
+            )
+        )
+
+        story.append(
+            Paragraph(
+                item["question"],
+                styles["BodyText"],
+            )
+        )
+
+        story.append(
+            Paragraph(
+                "<b>Answer:</b>",
+                styles["Heading3"],
+            )
+        )
+
+        story.append(
+            Paragraph(
+                item["answer"].replace("\n", "<br/>"),
+                styles["BodyText"],
+            )
+        )
+
+    doc.build(story)
+
+    buffer.seek(0)
+
+    return buffer
     ...
 
 def create_docx(question, answer):
@@ -444,7 +572,22 @@ Instructions:
         "timestamp": datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
     }
 )
+    try:
+        supabase.table("study_history").insert(
+        {
+            "department": department,
+            "subject": subject,
+            "topic": topic,
+            "mode": mode,
+            "language": language,
+            "difficulty": difficulty,
+            "question": user_prompt,
+            "answer": answer,
+        }
+    ).execute()
 
+    except Exception as e:
+        st.warning(f"Supabase save failed: {e}")
 # -----------------------------
 # History Controls
 # -----------------------------
@@ -533,6 +676,7 @@ for item in reversed(st.session_state.history):
             "Download Latest Answer",
             latest,
             file_name="studyguide_answer.txt",
+            key="download_latest_txt",
         )
 
         pdf_buffer = create_pdf(
@@ -545,6 +689,7 @@ for item in reversed(st.session_state.history):
             data=pdf_buffer,
             file_name="studyguide_answer.pdf",
             mime="application/pdf",
+            key="download_latest_pdf",
         )
 
         docx_buffer = create_docx(
@@ -557,6 +702,7 @@ for item in reversed(st.session_state.history):
             data=docx_buffer,
             file_name="studyguide_answer.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            key="download_latest_docx",
         )
 
 
