@@ -105,6 +105,8 @@ if "user" not in st.session_state:
 
 if "chat_count" not in st.session_state:
     st.session_state.chat_count = 0
+if "history_loaded" not in st.session_state:
+    st.session_state.history_loaded = False
 
 # -----------------------------
 # Login Gate
@@ -185,6 +187,45 @@ if st.session_state.user is None:
                 st.error(f"Sign up failed: {e}")
 
     st.stop()
+
+if st.session_state.user is not None and not st.session_state.history_loaded:
+
+    try:
+        history_response = (
+            supabase.table("study_history")
+            .select("*")
+            .eq("user_id", st.session_state.user.id)
+            .order("created_at")
+            .execute()
+        )
+
+        st.session_state.history = []
+
+        for row in history_response.data:
+            st.session_state.history.append(
+                {
+                    "id": row["id"],
+                    "department": row.get("department", ""),
+                    "subject": row.get("subject", ""),
+                    "topic": row.get("topic", ""),
+                    "mode": row.get("mode", ""),
+                    "language": row.get("language", ""),
+                    "difficulty": row.get("difficulty", ""),
+                    "question": row.get("question", ""),
+                    "answer": row.get("answer", ""),
+                    "timestamp": row.get("created_at", "No timestamp"),
+                }
+            )
+
+        st.session_state.chat_count = max(
+            [item["id"] for item in st.session_state.history],
+            default=0,
+        )
+
+        st.session_state.history_loaded = True
+
+    except Exception as e:
+        st.warning(f"History load failed: {e}")
 # -----------------------------
 # Sidebar
 # -----------------------------
@@ -192,6 +233,17 @@ if st.session_state.user is None:
 with st.sidebar:
 
     st.title("📚 StudyGuide AI")
+
+    st.caption(f"👤 {st.session_state.user.email}")
+
+    if st.button("🚪 Logout"):
+
+        st.session_state.user = None
+        st.session_state.history = []
+        st.session_state.chat_count = 0
+        st.session_state.history_loaded = False
+
+        st.rerun()
 
     st.markdown("---")
 
@@ -575,6 +627,7 @@ Instructions:
     try:
         supabase.table("study_history").insert(
         {
+            "user_id": st.session_state.user.id,
             "department": department,
             "subject": subject,
             "topic": topic,
@@ -598,9 +651,24 @@ if st.session_state.history:
 
     with col2:
         if st.button("🗑️ Clear History"):
-            st.session_state.history = []
-            st.session_state.chat_count = 0
-            st.rerun()
+
+            try:
+                supabase.table("study_history").delete().eq(
+                    "user_id",
+                    st.session_state.user.id,
+                ).execute()
+
+                st.session_state.history = []
+                st.session_state.chat_count = 0
+                st.session_state.history_loaded = True
+
+                st.success("History cleared successfully.")
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"History clear failed: {e}")
+
+
 # -----------------------------
 # Chat History
 # -----------------------------
@@ -608,60 +676,89 @@ if st.session_state.history:
 if st.session_state.history:
 
     st.markdown("---")
-    st.header(f"💬 Conversation ({len(st.session_state.history)})")
-    
-    total_conversations = len(st.session_state.history)
+    st.header(
+        f"💬 Conversation ({len(st.session_state.history)})"
+    )
+
+    total_conversations = len(
+        st.session_state.history
+    )
 
     average_answer_length = (
-    sum(len(item["answer"]) for item in st.session_state.history)
-    // total_conversations
-    if total_conversations > 0
-    else 0
-)
+        sum(
+            len(item["answer"])
+            for item in st.session_state.history
+        )
+        // total_conversations
+        if total_conversations > 0
+        else 0
+    )
 
     st.info(
-    f"""
-    📊 Statistics
+        f"""
+📊 Statistics
 
-    • Total Conversations: {total_conversations}
+• Total Conversations: {total_conversations}
 
-    • Average Answer Length: {average_answer_length} characters
-    """
+• Average Answer Length: {average_answer_length} characters
+"""
     )
 
     search_query = st.text_input(
         "🔍 Search Conversations",
-        placeholder="Search by question, answer, topic..."
+        placeholder="Search by question, answer, topic...",
     )
 
-for item in reversed(st.session_state.history):
-
-    with st.expander(
-        f"💬 Conversation #{item['id']} - {item['topic']}"
+    for item in reversed(
+        st.session_state.history
     ):
-        st.caption(
+
+        with st.expander(
+            f"💬 Conversation #{item['id']} - {item['topic']}"
+        ):
+
+            st.caption(
                 f"🕒 {item.get('timestamp', 'No timestamp')}"
             )
 
+            st.markdown("### 👤 Question")
+            st.write(
+                item["question"]
+            )
 
-        st.markdown("### 👤 Question")
-        st.write(item["question"])
+            st.markdown("### 🤖 StudyGuide AI")
+            type_animation(
+                item["answer"]
+            )
 
-        st.markdown("### 🤖 StudyGuide AI")
-        type_animation(item["answer"])
+            if st.button(
+                f"🗑️ Delete Conversation #{item['id']}",
+                key=f"delete_{item['id']}",
+            ):
 
+                try:
+                    supabase.table(
+                        "study_history"
+                    ).delete().eq(
+                        "id",
+                        item["id"],
+                    ).eq(
+                        "user_id",
+                        st.session_state.user.id,
+                    ).execute()
 
-        if st.button(
-            f"🗑️ Delete Conversation #{item['id']}",
-            key=f"delete_{item['id']}"
-        ):
-            st.session_state.history = [
-                chat for chat in st.session_state.history
-                if chat["id"] != item["id"]
-            ]
-            st.rerun()
+                    st.session_state.history = [
+                        chat
+                        for chat in st.session_state.history
+                        if chat["id"] != item["id"]
+                    ]
 
+                    st.rerun()
 
+                except Exception as e:
+                    st.error(
+                        f"Conversation delete failed: {e}"
+                    )
 
 # -----------------------------
 # Download
