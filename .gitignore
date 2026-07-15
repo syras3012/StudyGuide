@@ -212,3 +212,4 @@ tools/a2a-inspector/
 terraform.tfstate
 terraform.tfstate.backup
 artifacts/
+web_app.py1.txt
